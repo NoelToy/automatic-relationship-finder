@@ -1,2 +1,3 @@
-# automatic-relationship-finder
-A Java library for automatic relationship detection between database tables based on column name and data matching. Ideal for OLTP data where physical relationships may be absent at the RDBMS level. Users can configure column name and data match confidence thresholds to fine-tune results.
+# Automatic Relationship Finder (ARF)
+
+**Automatic Relationship Finder (ARF)** is a Java library that automatically detects implicit relationships between database tables by analyzing column names and data patterns. Designed for OLTP environments where physical relationships may not be defined at the RDBMS level, ARF allows users to configure confidence thresholds for column name and data matching, fine-tuning relationship detection precision. Additionally, ARF provides control over which data types should be considered in relationship checks, ensuring context-specific and targeted analysis.
