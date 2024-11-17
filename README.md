@@ -34,7 +34,7 @@
 <dependency>
     <groupId>io.github.noeltoy</groupId>
     <artifactId>automatic-relationship-finder</artifactId>
-    <version>1.0</version>
+    <version>1.1</version>
 </dependency>
 ```
 ### Example
