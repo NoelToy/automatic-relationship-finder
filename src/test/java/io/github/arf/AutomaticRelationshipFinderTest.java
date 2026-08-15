@@ -39,16 +39,21 @@ public class AutomaticRelationshipFinderTest {
         List<List<String>> dataTableB = List.of(
                 List.of("OD001","2","P002","1","0"),
                 List.of("OD003","20","P012","2","1"),
-                List.of("OD003","28","P008","8","0"),
-                List.of("OD004","8","P009","3","1"),
-                List.of("OD005","14","P022","4","0"),
+                List.of("OD003","28","P008","2","0"),
+                List.of("OD004","8","P009","8","1"),
+                List.of("OD005","14","P022","20","0"),
                 List.of("OD006","17","P109","5","1"),
-                List.of("OD007","1","P700","13","1"),
-                List.of("OD008","3","P802","7","1"),
-                List.of("OD009","7","P052","11","1"),
-                List.of("OD010","1","P092","12","0"),
-                List.of("OD011","1","P042","18","0"),
-                List.of("OD012","3","P072","19","0")
+                List.of("OD007","1","P700","5","1"),
+                List.of("OD008","3","P802","17","1"),
+                List.of("OD009","7","P052","14","1"),
+                List.of("OD010","1","P092","12","1"),
+                List.of("OD011","1","P042","19","1"),
+                List.of("OD012","3","P072","17","1"),
+                List.of("OD013","2","P072","15","1"),
+                List.of("OD014","2","P072","18","1"),
+                List.of("OD015","1","P072","20","1"),
+                List.of("OD016","1","P072","13","0"),
+                List.of("OD017","1","P072","7","1")
         );
         Table<String> tableB = new Table<>(tableBName,columnNamesB,dataTableB);
         List<Table<String>> tables = List.of(tableA, tableB);
@@ -59,6 +64,13 @@ public class AutomaticRelationshipFinderTest {
                 .setIgnoreColumnNamePatterns(ignoreColumPatterns)
                 .builder();
         List<Relationship> relationships = relationshipFinder.findRelationShip();
-        relationships.forEach(relationship -> System.out.println("From Table: "+relationship.fromTable()+" | To Table: "+relationship.toTable()+" | From Column: "+relationship.fromColumnName()+" | To Column: "+relationship.toColumnName()+" | Data Similarity Score: "+relationship.dataSimilarity()));
+        relationships.forEach(relationship -> System.out.println(
+                "From Table: " + relationship.fromTable() +
+                        " | To Table: " + relationship.toTable() +
+                        " | From Column: " + relationship.fromColumn().columnName() +
+                        " (" + relationship.fromColumn().role() + ")" +
+                        " | To Column: " + relationship.toColumn().columnName() +
+                        " (" + relationship.toColumn().role() + ")" +
+                        " | Data Similarity Score: " + relationship.dataSimilarity()));
     }
 }

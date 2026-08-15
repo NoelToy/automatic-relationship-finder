@@ -9,11 +9,14 @@ import io.github.arf.lib.converters.TableConverter;
 import io.github.arf.lib.exceptions.ConfidenceValueRageException;
 import io.github.arf.lib.models.IntermediateRelationship;
 import io.github.arf.lib.models.Relationship;
+import io.github.arf.lib.models.RelationshipColumn;
 import io.github.arf.lib.models.Table;
+import io.github.arf.lib.models.constants.ColumnRole;
 import io.github.arf.lib.models.constants.DataTypes;
 import io.github.arf.lib.models.internal.ColumnSet;
 import io.github.arf.lib.models.internal.InternalTable;
 import io.github.arf.lib.models.internal.Row;
+import io.github.arf.lib.util.ColumnRoleResolver;
 import io.github.arf.lib.util.JaccardIndex;
 import io.github.arf.lib.util.ListToArray;
 import io.github.fwm.WordMatcher;
@@ -21,6 +24,7 @@ import io.github.fwm.lib.enums.MatchType;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
@@ -28,8 +32,7 @@ import java.util.stream.IntStream;
 
 public class AutomaticRelationshipFinder<T> {
 
-//    private final List<Table<T>> tables;
-    private final  List<InternalTable> xTables;
+    private final List<InternalTable> xTables;
     private final double columnNameConfidence;
     private final double dataConfidence;
     private final List<DataTypes> ignoreDatatypes;
@@ -37,7 +40,6 @@ public class AutomaticRelationshipFinder<T> {
     private final int threadCount;
 
     private AutomaticRelationshipFinder(List<Table<T>> tables, double columnNameConfidence, double dataConfidence, List<DataTypes> ignoreDatatypes,List<String> ignoreColumnNamePatterns,int threadCount){
-//        this.tables = tables;
         this.xTables = TableConverter.convertAll(tables);
         this.columnNameConfidence = columnNameConfidence;
         this.dataConfidence = dataConfidence;
@@ -56,12 +58,13 @@ public class AutomaticRelationshipFinder<T> {
 
         public AutomaticRelationshipFinderBuilder(List<Table<T>> tables){
             this.tables = tables;
-            int threadCount = Runtime.getRuntime().availableProcessors()-1;
-            this.threadCount = Math.min(this.tables.size(), threadCount);
+            int availableCores = Runtime.getRuntime().availableProcessors()-1;
+            int safeThreadCount = Math.max(1, availableCores);
+            this.threadCount = Math.max(1, Math.min(this.tables.size(), safeThreadCount));
         }
 
         public AutomaticRelationshipFinderBuilder<T> setColumnNameConfidence(double value){
-            if (this.isValidRange(value)) {
+            if (this.isOutOfRange(value)) {
                 throw new ConfidenceValueRageException("Column name confidence value range should be between 0.0 and 1.0");
             }
             this.columnNameConfidence = value;
@@ -69,7 +72,7 @@ public class AutomaticRelationshipFinder<T> {
         }
 
         public AutomaticRelationshipFinderBuilder<T> setDataConfidence(double value){
-            if (this.isValidRange(value)) {
+            if (this.isOutOfRange(value)) {
                 throw new ConfidenceValueRageException("Data confidence value range should be between 0.0 and 1.0");
             }
             this.dataConfidence = value;
@@ -87,6 +90,9 @@ public class AutomaticRelationshipFinder<T> {
         }
 
         public AutomaticRelationshipFinderBuilder<T> setThreadCount(int threadCount){
+            if (threadCount < 1) {
+                throw new IllegalArgumentException("threadCount must be >= 1");
+            }
             this.threadCount = threadCount;
             return this;
         }
@@ -100,14 +106,13 @@ public class AutomaticRelationshipFinder<T> {
                     this.threadCount);
         }
 
-        private boolean isValidRange(double value) {
-            return !(value <= 1.0) || !(value >= 0.0);
+        private boolean isOutOfRange(double value) {
+            return value < 0.0 || value > 1.0;
         }
-
     }
 
     public List<Relationship> findRelationShip(){
-        Map<String,RecordAnalysisResult> tableAnalyzesResult = new HashMap<>();
+        ConcurrentHashMap<String,RecordAnalysisResult> tableAnalyzesResult = new ConcurrentHashMap<>();
 //        Analyzing each table using FTA
         ExecutorService executor = Executors.newFixedThreadPool(this.threadCount);
         List<CompletableFuture<Void>> futures = xTables.stream()
@@ -122,17 +127,8 @@ public class AutomaticRelationshipFinder<T> {
                             throw new RuntimeException(e);
                         }
                     }
-                    /*for (String[] data : ListToArray.convertTo2DArray(table.data())) {
-                        try {
-                            analysis.train(data);
-                        } catch (FTAPluginException | FTAUnsupportedLocaleException e) {
-                            throw new RuntimeException(e);
-                        }
-                    }*/
                     try {
-                        synchronized (tableAnalyzesResult) {
-                            tableAnalyzesResult.put(table.tableName(), analysis.getResult());
-                        }
+                        tableAnalyzesResult.put(table.tableName(), analysis.getResult());
                     } catch (FTAPluginException | FTAUnsupportedLocaleException e) {
                         throw new RuntimeException(e);
                     }
@@ -173,16 +169,10 @@ public class AutomaticRelationshipFinder<T> {
                 intermediateTableRelationships.add(intermediateRelationships);
             }
         }
-//        Filtering out relationships
+//        Generating out relationships
         return intermediateTableRelationships.stream()
                 .flatMap(Collection::stream)
-                .map(ir -> new Relationship(
-                        xTables.get(ir.fromTableIndex()).tableName(),
-                        xTables.get(ir.toTableIndex()).tableName(),
-                        xTables.get(ir.fromTableIndex()).getColumnName(ir.fromColumns()),
-                        xTables.get(ir.toTableIndex()).getColumnName(ir.toColumns()),
-                        ir.dataSimilarity())
-                ).toList();
+                .map(this::toRelationship).toList();
 
     }
 
@@ -202,12 +192,6 @@ public class AutomaticRelationshipFinder<T> {
     private boolean isColumnNameMatch(WordMatcher wordMatcher,String columnNameA,String columnNameB){
         String match = wordMatcher.findBestMatch(columnNameB);
         return match != null && match.equalsIgnoreCase(columnNameA);
-    }
-
-    private <R> double getJaccardIndex(List<List<R>> dataA, List<List<R>> dataB, int colIndexA, int colIndexB){
-        Set<R> a = new HashSet<>(extractColumnData(dataA,colIndexA));
-        Set<R> b = new HashSet<>(extractColumnData(dataB,colIndexB));
-        return JaccardIndex.getSimilarity(a,b);
     }
 
     private <R>List<R> extractColumnData(List<List<R>> data, int index){
@@ -257,5 +241,25 @@ public class AutomaticRelationshipFinder<T> {
                         .matcher(columnA).matches()) && ignoreColumnNamePatterns.stream()
                 .noneMatch(regex-> Pattern.compile(regex,Pattern.CASE_INSENSITIVE)
                         .matcher(columnB).matches());
+    }
+
+    private Relationship toRelationship(IntermediateRelationship ir){
+        InternalTable fromTable = xTables.get(ir.fromTableIndex());
+        InternalTable toTable = xTables.get(ir.toTableIndex());
+
+        String fromColumnName = fromTable.getColumnName(ir.fromColumns());
+        String toColumnName = toTable.getColumnName(ir.toColumns());
+
+        int fromColIndex = fromTable.getColumnIndex(fromColumnName);
+        int toColIndex = toTable.getColumnIndex(toColumnName);
+
+        ColumnRole[] roles = ColumnRoleResolver.resolve(
+                fromTable.rows(), toTable.rows(), fromColIndex, toColIndex);
+        return new Relationship(
+                fromTable.tableName(),
+                toTable.tableName(),
+                new RelationshipColumn(fromColumnName, roles[0]),
+                new RelationshipColumn(toColumnName, roles[1]),
+                ir.dataSimilarity());
     }
 }

@@ -6,7 +6,7 @@
 
     <groupId>io.github.noeltoy</groupId>
     <artifactId>automatic-relationship-finder</artifactId>
-    <version>1.1</version>
+    <version>1.2</version>
 
     <name>Automatic-Relationship-Finder(ARF)</name>
     <description>A Java library for automatic relationship detection between database tables based on column name and data matching. Ideal for OLTP data where physical relationships may be absent at the RDBMS level. Users can configure column name and data match confidence thresholds to fine-tune results.</description>
@@ -68,6 +68,11 @@
             <groupId>io.github.noeltoy</groupId>
             <artifactId>fuzzy-word-matcher</artifactId>
             <version>0.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>2.0.16</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
