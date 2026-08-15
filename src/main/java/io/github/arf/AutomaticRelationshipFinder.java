@@ -2,13 +2,21 @@ package io.github.arf;
 
 import com.cobber.fta.*;
 import com.cobber.fta.core.FTAPluginException;
+import com.cobber.fta.core.FTAType;
 import com.cobber.fta.core.FTAUnsupportedLocaleException;
 import com.cobber.fta.dates.DateTimeParser;
+import io.github.arf.lib.converters.TableConverter;
 import io.github.arf.lib.exceptions.ConfidenceValueRageException;
 import io.github.arf.lib.models.IntermediateRelationship;
 import io.github.arf.lib.models.Relationship;
+import io.github.arf.lib.models.RelationshipColumn;
 import io.github.arf.lib.models.Table;
+import io.github.arf.lib.models.constants.ColumnRole;
 import io.github.arf.lib.models.constants.DataTypes;
+import io.github.arf.lib.models.internal.ColumnSet;
+import io.github.arf.lib.models.internal.InternalTable;
+import io.github.arf.lib.models.internal.Row;
+import io.github.arf.lib.util.ColumnRoleResolver;
 import io.github.arf.lib.util.JaccardIndex;
 import io.github.arf.lib.util.ListToArray;
 import io.github.fwm.WordMatcher;
@@ -16,6 +24,7 @@ import io.github.fwm.lib.enums.MatchType;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Pattern;
@@ -23,7 +32,7 @@ import java.util.stream.IntStream;
 
 public class AutomaticRelationshipFinder<T> {
 
-    private final List<Table<T>> tables;
+    private final List<InternalTable> xTables;
     private final double columnNameConfidence;
     private final double dataConfidence;
     private final List<DataTypes> ignoreDatatypes;
@@ -31,7 +40,7 @@ public class AutomaticRelationshipFinder<T> {
     private final int threadCount;
 
     private AutomaticRelationshipFinder(List<Table<T>> tables, double columnNameConfidence, double dataConfidence, List<DataTypes> ignoreDatatypes,List<String> ignoreColumnNamePatterns,int threadCount){
-        this.tables = tables;
+        this.xTables = TableConverter.convertAll(tables);
         this.columnNameConfidence = columnNameConfidence;
         this.dataConfidence = dataConfidence;
         this.ignoreDatatypes = ignoreDatatypes;
@@ -49,12 +58,13 @@ public class AutomaticRelationshipFinder<T> {
 
         public AutomaticRelationshipFinderBuilder(List<Table<T>> tables){
             this.tables = tables;
-            int threadCount = Runtime.getRuntime().availableProcessors()-1;
-            this.threadCount = Math.min(this.tables.size(), threadCount);
+            int availableCores = Runtime.getRuntime().availableProcessors()-1;
+            int safeThreadCount = Math.max(1, availableCores);
+            this.threadCount = Math.max(1, Math.min(this.tables.size(), safeThreadCount));
         }
 
         public AutomaticRelationshipFinderBuilder<T> setColumnNameConfidence(double value){
-            if (this.isValidRange(value)) {
+            if (this.isOutOfRange(value)) {
                 throw new ConfidenceValueRageException("Column name confidence value range should be between 0.0 and 1.0");
             }
             this.columnNameConfidence = value;
@@ -62,7 +72,7 @@ public class AutomaticRelationshipFinder<T> {
         }
 
         public AutomaticRelationshipFinderBuilder<T> setDataConfidence(double value){
-            if (this.isValidRange(value)) {
+            if (this.isOutOfRange(value)) {
                 throw new ConfidenceValueRageException("Data confidence value range should be between 0.0 and 1.0");
             }
             this.dataConfidence = value;
@@ -80,6 +90,9 @@ public class AutomaticRelationshipFinder<T> {
         }
 
         public AutomaticRelationshipFinderBuilder<T> setThreadCount(int threadCount){
+            if (threadCount < 1) {
+                throw new IllegalArgumentException("threadCount must be >= 1");
+            }
             this.threadCount = threadCount;
             return this;
         }
@@ -93,33 +106,29 @@ public class AutomaticRelationshipFinder<T> {
                     this.threadCount);
         }
 
-        private boolean isValidRange(double value) {
-            return !(value <= 1.0) || !(value >= 0.0);
+        private boolean isOutOfRange(double value) {
+            return value < 0.0 || value > 1.0;
         }
-
     }
 
     public List<Relationship> findRelationShip(){
-        Map<String,RecordAnalysisResult> tableAnalyzesResult = new HashMap<>();
+        ConcurrentHashMap<String,RecordAnalysisResult> tableAnalyzesResult = new ConcurrentHashMap<>();
 //        Analyzing each table using FTA
         ExecutorService executor = Executors.newFixedThreadPool(this.threadCount);
-        List<CompletableFuture<Void>> futures = tables.stream()
+        List<CompletableFuture<Void>> futures = xTables.stream()
                 .map(table -> CompletableFuture.runAsync(() -> {
-                    AnalyzerContext context = new AnalyzerContext(null, DateTimeParser.DateResolutionMode.Auto, table.name(), ListToArray.convertToArray(table.columns()));
+                    AnalyzerContext context = new AnalyzerContext(null, DateTimeParser.DateResolutionMode.Auto, table.tableName(), table.columnNames());
                     TextAnalyzer template = new TextAnalyzer(context);
                     RecordAnalyzer analysis = new RecordAnalyzer(template);
-                    for (String[] data : ListToArray.convertTo2DArray(table.data())) {
+                    for (Row row : table.rows()) {
                         try {
-                            analysis.train(data);
+                            analysis.train(row.values());
                         } catch (FTAPluginException | FTAUnsupportedLocaleException e) {
                             throw new RuntimeException(e);
                         }
                     }
-
                     try {
-                        synchronized (tableAnalyzesResult) {
-                            tableAnalyzesResult.put(table.name(), analysis.getResult());
-                        }
+                        tableAnalyzesResult.put(table.tableName(), analysis.getResult());
                     } catch (FTAPluginException | FTAUnsupportedLocaleException e) {
                         throw new RuntimeException(e);
                     }
@@ -133,42 +142,37 @@ public class AutomaticRelationshipFinder<T> {
 //        Checking datatypes and forming intermediate relationships
         List<List<IntermediateRelationship>> intermediateTableRelationships = new ArrayList<>();
         List<String> ignoreDatatypeList = ignoreDatatypes.stream().map(Enum::name).toList();
-        for (int i = 0; i < tables.size(); i++) {
-            String tableAName = tables.get(i).name();
+        for (int i = 0; i < xTables.size(); i++) {
+            String tableAName = xTables.get(i).tableName();
             List<String> columnDataTypesA = getColumnDataTypes(tableAnalyzesResult.get(tableAName).getStreamResults());
-            WordMatcher wordMatcher = new WordMatcher.WordMatcherBuilder(tables.get(i).columns().stream().map(String::toLowerCase).toList(), MatchType.COSINE_SIMILARITY)
+            WordMatcher wordMatcher = new WordMatcher.WordMatcherBuilder(Arrays.stream(xTables.get(i).columnNames()).map(String::toLowerCase).toList(), MatchType.COSINE_SIMILARITY)
                     .setTolerance(columnNameConfidence)
                     .setThreshold(columnNameConfidence)
                     .setDefaultValue(null).build();
-            for (int j = i+1; j < tables.size(); j++) {
-                String tableBName = tables.get(j).name();
+            for (int j = i+1; j < xTables.size(); j++) {
+                String tableBName = xTables.get(j).tableName();
                 List<String> columnDataTypesB = getColumnDataTypes(tableAnalyzesResult.get(tableBName).getStreamResults());
                 int finalI = i;
                 int finalJ = j;
                 List<IntermediateRelationship> intermediateRelationships = IntStream.range(0, columnDataTypesA.size())
                         .boxed()
                         .flatMap(k -> IntStream.range(0, columnDataTypesB.size())
-                                .filter(l-> notInIgnoreColumnNames(tables.get(finalI).columns().get(k),tables.get(finalJ).columns().get(l)))
+                                .filter(l-> notInIgnoreColumnNames(xTables.get(finalI).columnNames()[k],xTables.get(finalJ).columnNames()[l]))
                                 .filter(l -> columnDataTypesA.get(k).equals(columnDataTypesB.get(l)) && !ignoreDatatypeList.contains(columnDataTypesA.get(k)))
                                 .mapToObj(l -> {
-                                    boolean columnNameMatch = isColumnNameMatch(wordMatcher, tables.get(finalI).columns().get(k).toLowerCase(), tables.get(finalJ).columns().get(l).toLowerCase());
-                                    double dataSimilarity = getJaccardIndex(tables.get(finalI).data(), tables.get(finalJ).data(), k, l);
-                                    return new IntermediateRelationship(finalI, finalJ, k, l,columnNameMatch,dataSimilarity);
+                                    boolean columnNameMatch = isColumnNameMatch(wordMatcher, xTables.get(finalI).columnNames()[k].toLowerCase(), xTables.get(finalJ).columnNames()[l].toLowerCase());
+                                    double dataSimilarity = getJaccardIndex(xTables.get(finalI).rows(), xTables.get(finalJ).rows(), k, l);
+                                    return new IntermediateRelationship(finalI, finalJ, ColumnSet.single(k), ColumnSet.single(l),columnNameMatch,dataSimilarity);
                                 } ))
+                        .filter(ir -> ir.isColumnNameMatch() && ir.dataSimilarity() >= dataConfidence)
                         .toList();
                 intermediateTableRelationships.add(intermediateRelationships);
             }
         }
-//        Filtering out relationships
+//        Generating out relationships
         return intermediateTableRelationships.stream()
-                .flatMap(r -> r.stream()
-                        .filter(c -> c.isColumnNameMatch() && c.dataSimilarity() >= dataConfidence))
-                .map(ir -> new Relationship(
-                        tables.get(ir.fromTableIndex()).name(),
-                        tables.get(ir.toTableIndex()).name(),
-                        tables.get(ir.fromTableIndex()).columns().get(ir.fromColumnIndex()),
-                        tables.get(ir.toTableIndex()).columns().get(ir.toColumnIndex())))
-                .toList();
+                .flatMap(Collection::stream)
+                .map(this::toRelationship).toList();
 
     }
 
@@ -190,12 +194,6 @@ public class AutomaticRelationshipFinder<T> {
         return match != null && match.equalsIgnoreCase(columnNameA);
     }
 
-    private <R> double getJaccardIndex(List<List<R>> dataA, List<List<R>> dataB, int colIndexA, int colIndexB){
-        Set<R> a = new HashSet<>(extractColumnData(dataA,colIndexA));
-        Set<R> b = new HashSet<>(extractColumnData(dataB,colIndexB));
-        return JaccardIndex.getSimilarity(a,b);
-    }
-
     private <R>List<R> extractColumnData(List<List<R>> data, int index){
         List<R> columnData = new ArrayList<>();
         for (List<R> row : data) {
@@ -203,7 +201,25 @@ public class AutomaticRelationshipFinder<T> {
         }
         return columnData;
     }
+
+    private double getJaccardIndex(Row[] rowsOfTableA, Row[] rowsOfTableB, int colIndexA, int colIndexB){
+        Set<String> a = new HashSet<>(extractColumnData(rowsOfTableA,colIndexA));
+        Set<String> b = new HashSet<>(extractColumnData(rowsOfTableB,colIndexB));
+        return JaccardIndex.getSimilarity(a,b);
+    }
+
+    private List<String> extractColumnData(Row[] rows,int index){
+        List<String> columnData = new ArrayList<>();
+        for (Row row : rows) {
+            columnData.add(row.values()[index]);
+        }
+        return columnData;
+    }
+
     private boolean isTypeBoolean(TextAnalysisResult result){
+        if (FTAType.BOOLEAN.equals(result.getType())) {
+            return true;
+        }
         if(result.getDistinctCount()==2){
             if(result.getMinValue().equalsIgnoreCase("f") && result.getMaxValue().equalsIgnoreCase("t")){
                 return true;
@@ -225,5 +241,25 @@ public class AutomaticRelationshipFinder<T> {
                         .matcher(columnA).matches()) && ignoreColumnNamePatterns.stream()
                 .noneMatch(regex-> Pattern.compile(regex,Pattern.CASE_INSENSITIVE)
                         .matcher(columnB).matches());
+    }
+
+    private Relationship toRelationship(IntermediateRelationship ir){
+        InternalTable fromTable = xTables.get(ir.fromTableIndex());
+        InternalTable toTable = xTables.get(ir.toTableIndex());
+
+        String fromColumnName = fromTable.getColumnName(ir.fromColumns());
+        String toColumnName = toTable.getColumnName(ir.toColumns());
+
+        int fromColIndex = fromTable.getColumnIndex(fromColumnName);
+        int toColIndex = toTable.getColumnIndex(toColumnName);
+
+        ColumnRole[] roles = ColumnRoleResolver.resolve(
+                fromTable.rows(), toTable.rows(), fromColIndex, toColIndex);
+        return new Relationship(
+                fromTable.tableName(),
+                toTable.tableName(),
+                new RelationshipColumn(fromColumnName, roles[0]),
+                new RelationshipColumn(toColumnName, roles[1]),
+                ir.dataSimilarity());
     }
 }

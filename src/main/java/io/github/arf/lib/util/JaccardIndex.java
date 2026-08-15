@@ -5,6 +5,9 @@ import java.util.Set;
 
 public class JaccardIndex {
     public static <T>double getSimilarity(Set<T> a, Set<T> b){
+        if (a.isEmpty() && b.isEmpty()) {
+            return 0.0;
+        }
        Set<T> union =   new HashSet<>(a);
        union.addAll(b);
 
@@ -18,6 +21,9 @@ public class JaccardIndex {
     }
 
     public static <T>double getDistance(Set<T> a, Set<T> b){
+        if (a.isEmpty() && b.isEmpty()) {
+            return 0.0;
+        }
        Set<T> union =   new HashSet<>(a);
        union.addAll(b);
 
