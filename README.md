@@ -89,6 +89,20 @@ relationships.forEach(relationship -> System.out.println(
 
 For the full runnable example, see the test package (`AutomaticRelationshipFinderTest`).
 
+## Data Similarity
+
+Every `Relationship` includes a `dataSimilarity` score (`double`, range `0.0`–`1.0`) describing how similar the *values* in the two matched columns are — independent of how similar their *names* are (name matching is a separate, earlier filtering step controlled by `setColumnNameConfidence`).
+
+`dataSimilarity` is computed using the **Jaccard index**: each column's values are collected into a set of distinct raw strings, and the score is `|A ∩ B| / |A ∪ B|` — the size of the intersection divided by the size of the union. A score of `1.0` means the two columns contain exactly the same set of distinct values; `0.0` means no overlap at all.
+
+A few practical notes on how this is computed:
++ Comparisons are on **raw string values**, with no case-folding, trimming, or type coercion. `"1"` and `"1 "` are treated as distinct values, as are `"Y"` and `"y"`.
++ The comparison uses **distinct values**, not row counts — a column with `["1","1","2"]` is treated as the set `{"1","2"}`. Frequency/duplication within a column does not affect the score.
++ This check only runs on column pairs whose names already passed `columnNameConfidence`, so it's not run exhaustively across every possible column pair in your dataset.
++ Two entirely empty columns return a similarity of `0.0` rather than an undefined value.
+
+Use `setDataConfidence(...)` on the builder to set the minimum `dataSimilarity` a column pair must reach to be reported as a relationship.
+
 ## Column Roles
 
 Starting in version 1.2, every detected `Relationship` includes a `fromColumn` and `toColumn`, each of type `RelationshipColumn(columnName, role)`. The `role` is a `ColumnRole` describing how that column looks *relative to the other column in this specific relationship* — it is not a claim that a column is globally "the" primary key of its table.
