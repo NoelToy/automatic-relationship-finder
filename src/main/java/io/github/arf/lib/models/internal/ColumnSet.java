@@ -6,4 +6,11 @@ public record ColumnSet(int[] columnIndexes) {
                 new int[]{index}
         );
     }
+
+    public int singleIndex() {
+        if (columnIndexes.length != 1) {
+            throw new IllegalArgumentException("Expected a single-column ColumnSet");
+        }
+        return columnIndexes[0];
+    }
 }

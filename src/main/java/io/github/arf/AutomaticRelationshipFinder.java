@@ -247,11 +247,11 @@ public class AutomaticRelationshipFinder<T> {
         InternalTable fromTable = xTables.get(ir.fromTableIndex());
         InternalTable toTable = xTables.get(ir.toTableIndex());
 
-        String fromColumnName = fromTable.getColumnName(ir.fromColumns());
-        String toColumnName = toTable.getColumnName(ir.toColumns());
+        int fromColIndex = ir.fromColumns().singleIndex();
+        int toColIndex = ir.toColumns().singleIndex();
 
-        int fromColIndex = fromTable.getColumnIndex(fromColumnName);
-        int toColIndex = toTable.getColumnIndex(toColumnName);
+        String fromColumnName = fromTable.getColumnName(fromColIndex);
+        String toColumnName = toTable.getColumnName(toColIndex);
 
         ColumnRole[] roles = ColumnRoleResolver.resolve(
                 fromTable.rows(), toTable.rows(), fromColIndex, toColIndex);
